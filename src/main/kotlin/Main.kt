@@ -84,6 +84,42 @@ private fun scanKeys(): List<SshKey> =
             SshKey(file, format, protection)
         }
 
+/** One `Host`/`Match` block of ~/.ssh/config; options before the first block go into a "(global)" entry. */
+data class HostEntry(val patterns: String, val line: Int, val options: List<Pair<String, String>>) {
+    fun option(name: String) = options.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second
+}
+
+private fun expandHome(path: String) =
+    if (path.startsWith("~")) System.getProperty("user.home") + path.removePrefix("~") else path
+
+private fun parseConfig(): List<HostEntry> {
+    val file = File(sshDir(), "config")
+    if (!file.isFile) return emptyList()
+    val entries = mutableListOf<HostEntry>()
+    var patterns = "(global)"
+    var startLine = 1
+    var options = mutableListOf<Pair<String, String>>()
+    fun flush() {
+        if (patterns != "(global)" || options.isNotEmpty()) entries += HostEntry(patterns, startLine, options)
+    }
+    file.readLines().forEachIndexed { index, raw ->
+        val line = raw.trim()
+        if (line.isEmpty() || line.startsWith("#")) return@forEachIndexed
+        val keyword = line.takeWhile { !it.isWhitespace() && it != '=' }
+        val value = line.drop(keyword.length).trimStart().removePrefix("=").trim().removeSurrounding("\"")
+        if (keyword.equals("Host", true) || keyword.equals("Match", true)) {
+            flush()
+            patterns = if (keyword.equals("Match", true)) "Match $value" else value
+            startLine = index + 1
+            options = mutableListOf()
+        } else {
+            options += keyword to value
+        }
+    }
+    flush()
+    return entries
+}
+
 // Saved passphrases: one "keyname:base64" line per key. Base64 is encoding, NOT encryption.
 private fun storeFile() = File(sshDir(), "passphrases.b64")
 
@@ -121,10 +157,15 @@ fun App() {
     val scope = rememberCoroutineScope()
     var keys by remember { mutableStateOf<List<SshKey>?>(null) }
     var selected by remember { mutableStateOf<SshKey?>(null) }
+    var tab by remember { mutableStateOf(0) }
+    var hosts by remember { mutableStateOf<List<HostEntry>>(emptyList()) }
+    var selectedHost by remember { mutableStateOf<HostEntry?>(null) }
 
     fun refresh() {
         keys = null
         scope.launch {
+            hosts = withContext(Dispatchers.IO) { parseConfig() }
+            selectedHost = hosts.firstOrNull { it.patterns == selectedHost?.patterns }
             keys = withContext(Dispatchers.IO) { scanKeys() }
             selected = keys?.firstOrNull { it.file == selected?.file }
         }
@@ -140,19 +181,32 @@ fun App() {
                         TextButton(onClick = ::refresh) { Text("Rescan") }
                     }
                     Text(sshDir().path, style = MaterialTheme.typography.bodySmall)
+                    TabRow(selectedTabIndex = tab) {
+                        Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Keys") })
+                        Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Config") })
+                    }
                     Spacer(Modifier.height(12.dp))
-                    when (val list = keys) {
-                        null -> CircularProgressIndicator()
-                        else -> if (list.isEmpty()) Text("No private keys found.") else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(list, key = { it.file.path }) { key ->
-                                KeyRow(key, key.file == selected?.file) { selected = key }
+                    if (tab == 0) {
+                        when (val list = keys) {
+                            null -> CircularProgressIndicator()
+                            else -> if (list.isEmpty()) Text("No private keys found.") else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(list, key = { it.file.path }) { key ->
+                                    KeyRow(key, key.file == selected?.file) { selected = key }
+                                }
+                            }
+                        }
+                    } else {
+                        if (hosts.isEmpty()) Text("No ssh config found (or it is empty).") else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(hosts, key = { it.patterns + it.line }) { host ->
+                                HostRow(host, host.patterns == selectedHost?.patterns) { selectedHost = host }
                             }
                         }
                     }
                 }
                 VerticalDivider()
                 Box(Modifier.weight(1f).fillMaxHeight().padding(24.dp)) {
-                    selected?.let { DetailPane(it) } ?: Text("Select a key on the left.")
+                    if (tab == 0) selected?.let { DetailPane(it) } ?: Text("Select a key on the left.")
+                    else selectedHost?.let { HostDetail(it, keys.orEmpty()) } ?: Text("Select a host on the left.")
                 }
             }
         }
@@ -167,6 +221,43 @@ private fun KeyRow(key: SshKey, isSelected: Boolean, onClick: () -> Unit) {
     ) {
         Text(key.file.name, style = MaterialTheme.typography.titleSmall)
         Text(key.protection.label, color = key.protection.color, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun HostRow(host: HostEntry, isSelected: Boolean, onClick: () -> Unit) {
+    val bg = if (isSelected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
+    Column(
+        Modifier.fillMaxWidth().background(bg, RoundedCornerShape(8.dp)).clickable(onClick = onClick).padding(10.dp)
+    ) {
+        Text(host.patterns, style = MaterialTheme.typography.titleSmall)
+        host.option("HostName")?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun HostDetail(host: HostEntry, keys: List<SshKey>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(host.patterns, style = MaterialTheme.typography.headlineSmall)
+        Text("Config line ${host.line}", style = MaterialTheme.typography.bodySmall)
+        HorizontalDivider()
+        if (host.options.isEmpty()) Text("No options.")
+        for ((name, value) in host.options) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(160.dp))
+                Column {
+                    Text(value)
+                    if (name.equals("IdentityFile", ignoreCase = true)) {
+                        val file = File(expandHome(value))
+                        val key = keys.firstOrNull { it.file.absoluteFile == file.absoluteFile }
+                        when {
+                            key != null -> Text(key.protection.label, color = key.protection.color, style = MaterialTheme.typography.bodySmall)
+                            !file.exists() -> Text("File not found", color = Protection.BAD_PERMISSIONS.color, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
