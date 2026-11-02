@@ -1,0 +1,14 @@
+# Test fixture config
+Host *
+    ServerAliveInterval 60
+
+Host github github.com
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519_plain
+
+Host prod
+    HostName=10.0.0.5
+    Port 2222
+    User deploy
+    ProxyJump bastion

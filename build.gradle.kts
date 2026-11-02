@@ -14,6 +14,12 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.1")
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
+    testLogging { events("passed", "failed", "skipped") }
 }
 
 compose.desktop {

@@ -45,7 +45,7 @@ private val skipNames = setOf("known_hosts", "known_hosts.old", "config", "autho
 private fun sshDir() = File(System.getProperty("user.home"), ".ssh")
 
 /** Returns the PEM header ("OPENSSH PRIVATE KEY", "RSA PRIVATE KEY", ...) if the file is a private key. */
-private fun privateKeyFormat(file: File): String? {
+internal fun privateKeyFormat(file: File): String? {
     if (!file.isFile || file.length() > 64 * 1024) return null
     val first = runCatching { file.useLines { it.firstOrNull() } }.getOrNull() ?: return null
     return Regex("-----BEGIN (.*PRIVATE KEY)-----").find(first)?.groupValues?.get(1)
@@ -68,8 +68,8 @@ private fun runKeygen(file: File, passphrase: String): Pair<Int, String> {
     return process.exitValue() to output
 }
 
-private fun scanKeys(): List<SshKey> =
-    (sshDir().listFiles() ?: emptyArray())
+internal fun scanKeys(dir: File = sshDir()): List<SshKey> =
+    (dir.listFiles() ?: emptyArray())
         .filter { it.name !in skipNames && !it.name.endsWith(".pub") }
         .sortedBy { it.name }
         .mapNotNull { file ->
@@ -92,8 +92,7 @@ data class HostEntry(val patterns: String, val line: Int, val options: List<Pair
 private fun expandHome(path: String) =
     if (path.startsWith("~")) System.getProperty("user.home") + path.removePrefix("~") else path
 
-private fun parseConfig(): List<HostEntry> {
-    val file = File(sshDir(), "config")
+internal fun parseConfig(file: File = File(sshDir(), "config")): List<HostEntry> {
     if (!file.isFile) return emptyList()
     val entries = mutableListOf<HostEntry>()
     var patterns = "(global)"
@@ -121,18 +120,18 @@ private fun parseConfig(): List<HostEntry> {
 }
 
 // Saved passphrases: one "keyname:base64" line per key. Base64 is encoding, NOT encryption.
-private fun storeFile() = File(sshDir(), "passphrases.b64")
+internal fun storeFile(dir: File = sshDir()) = File(dir, "passphrases.b64")
 
-private fun loadSavedPassphrase(keyName: String): String? =
+internal fun loadSavedPassphrase(keyName: String, dir: File = sshDir()): String? =
     runCatching {
-        storeFile().readLines()
+        storeFile(dir).readLines()
             .firstOrNull { it.substringBefore(':') == keyName }
             ?.substringAfter(':')
             ?.let { String(Base64.getDecoder().decode(it), Charsets.UTF_8) }
     }.getOrNull()
 
-private fun savePassphrase(keyName: String, passphrase: String) {
-    val file = storeFile()
+internal fun savePassphrase(keyName: String, passphrase: String, dir: File = sshDir()) {
+    val file = storeFile(dir)
     val others = if (file.exists()) file.readLines().filter { it.isNotBlank() && it.substringBefore(':') != keyName } else emptyList()
     val encoded = Base64.getEncoder().encodeToString(passphrase.toByteArray(Charsets.UTF_8))
     file.writeText((others + "$keyName:$encoded").joinToString("\n") + "\n")
@@ -140,7 +139,7 @@ private fun savePassphrase(keyName: String, passphrase: String) {
     file.setWritable(false, false); file.setWritable(true, true)
 }
 
-private fun checkPassphrase(key: SshKey, passphrase: String): CheckResult {
+internal fun checkPassphrase(key: SshKey, passphrase: String): CheckResult {
     val (code, out) = runCatching { runKeygen(key.file, passphrase) }
         .getOrElse { return CheckResult.Error(it.message ?: "Could not run ssh-keygen") }
     return when {

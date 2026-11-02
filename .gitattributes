@@ -1,0 +1,2 @@
+# Keep test keys byte-for-byte: CRLF conversion would corrupt them.
+src/test/resources/ssh/** -text
