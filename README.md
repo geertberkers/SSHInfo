@@ -12,7 +12,8 @@ A small Kotlin Compose Multiplatform (desktop) app that scans your `~/.ssh` fold
   - **Unreadable**
 - **Check** a passphrase: reports whether it is correct for the selected key.
 - **Save** a passphrase per key, with a **Show/Hide** toggle on the input field.
-- **Rescan** to refresh the list.
+- **Config tab**: reads `~/.ssh/config` and shows each `Host`/`Match` block with all its options (HostName, User, Port, ProxyJump, ...). Each `IdentityFile` is matched to your scanned keys and shows that key's status.
+- **Rescan** to refresh keys and config.
 
 ## How it works
 
